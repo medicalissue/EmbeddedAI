@@ -1,12 +1,9 @@
 """
-Emoji Reactor - RTMPose (Pure PyTorch, no ONNX)
+Emoji Reactor - Hand & Face Tracking
 
 States:
 - HANDS_UP      : hand above --raise-thresh
 - SMILING       : mouth aspect ratio > --smile-thresh
-- AHA           : index finger only up
-- CONFUSED      : index finger near mouth
-- FRUSTRATED    : two hands up high
 - STRAIGHT_FACE : default
 
 Run:
@@ -47,26 +44,18 @@ def load_emojis():
         "SMILING": "smile.jpg",
         "STRAIGHT_FACE": "plain.png",
         "HANDS_UP": "air.jpg",
-        "AHA": "aha.png",
-        "CONFUSED": "confused.png",
-        "FRUSTRATED": "frustrated.png",
     }
 
-    def load_set(prefix):
-        loaded = {}
-        for state, filename in file_map.items():
-            name = f"{prefix}{filename}" if prefix else filename
-            path = EMOJI_DIR / name
-            img = cv2.imread(str(path))
-            if img is not None:
-                loaded[state] = cv2.resize(img, (WINDOW_WIDTH, WINDOW_HEIGHT))
-        return loaded
+    loaded = {}
+    for state, filename in file_map.items():
+        path = EMOJI_DIR / filename
+        img = cv2.imread(str(path))
+        if img is not None:
+            loaded[state] = cv2.resize(img, (WINDOW_WIDTH, WINDOW_HEIGHT))
+        else:
+            print(f"[Warning] Could not load {path}")
 
-    return {
-        "default": load_set(""),
-        "monkey": load_set("monkey_"),
-        "blank": np.zeros((WINDOW_HEIGHT, WINDOW_WIDTH, 3), dtype=np.uint8)
-    }
+    return loaded
 
 
 def is_hand_up(landmarks, frame_h, thresh):
@@ -74,31 +63,10 @@ def is_hand_up(landmarks, frame_h, thresh):
     return landmarks[0, 1] / frame_h < thresh
 
 
-def is_index_up_only(lm, frame_h):
-    """Index finger up, others down."""
-    idx_tip = lm[8, 1]
-    idx_pip = lm[6, 1]
-    if idx_tip >= idx_pip - 0.003 * frame_h:
-        return False
-    other_tips = [lm[4, 1], lm[12, 1], lm[16, 1], lm[20, 1]]
-    return idx_tip < min(other_tips) - 0.006 * frame_h
-
-
-def is_confused(lm, mouth_center, frame_h, thresh):
-    """Index finger near mouth."""
-    if mouth_center is None:
-        return False
-    dist = np.linalg.norm(lm[8, :2] - mouth_center)
-    return dist / frame_h < thresh
-
-
-def count_hands_up(landmarks_list, frame_h, thresh):
-    """Count hands with wrist above threshold."""
-    return sum(1 for lm in landmarks_list if lm[0, 1] / frame_h < thresh)
 
 
 class BackgroundMusic(threading.Thread):
-    """Background music player."""
+    """Background music player that loops."""
     def __init__(self, path):
         super().__init__(daemon=True)
         self.path = path
@@ -136,26 +104,45 @@ class BackgroundMusic(threading.Thread):
                 break
 
 
+def play_sound(sound_name):
+    """Play sound effect for emoji state change."""
+    sound_path = AUDIO_DIR / f"{sound_name}.mp3"
+    if not os.path.isfile(sound_path):
+        return
+
+    cmd = None
+    if sys.platform == "darwin" and shutil.which("afplay"):
+        cmd = ["afplay", str(sound_path)]
+    elif shutil.which("ffplay"):
+        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(sound_path)]
+
+    if cmd:
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--precision', choices=['fp32', 'fp16'], default='fp16')
     parser.add_argument('--camera', type=int, default=0)
     parser.add_argument('--raise-thresh', type=float, default=0.25)
     parser.add_argument('--smile-thresh', type=float, default=0.35)
-    parser.add_argument('--confused-thresh', type=float, default=0.08)
-    parser.add_argument('--frustrated-thresh', type=float, default=0.45)
     parser.add_argument('--no-mirror', action='store_true')
-    parser.add_argument('--no-music', action='store_true')
     parser.add_argument('--no-gstreamer', action='store_true')
     args = parser.parse_args()
 
-    emoji_sets = load_emojis()
+    emojis = load_emojis()
+    blank_emoji = np.zeros((WINDOW_HEIGHT, WINDOW_WIDTH, 3), dtype=np.uint8)
 
-    # Music
-    music = None
-    if not args.no_music:
-        music = BackgroundMusic(str(AUDIO_DIR / "yessir.mp3"))
-        music.start()
+    # Background music
+    music = BackgroundMusic(str(AUDIO_DIR / "yessir.mp3"))
+    music.start()
 
     # Camera (GStreamer for Jetson Nano)
     if not args.no_gstreamer:
@@ -186,9 +173,9 @@ def main():
     pipeline.print_stats()
 
     fps_hist = []
-    mode = "default"
+    prev_state = None
 
-    print("\n[Ready] m=monkey, e=emoji, q=quit\n")
+    print("\n[Ready] Press 'q' to quit\n")
 
     while True:
         ret, frame = cap.read()
@@ -200,31 +187,28 @@ def main():
         frame = cv2.resize(frame, (WINDOW_WIDTH, WINDOW_HEIGHT))
         h, w = frame.shape[:2]
 
-        # RTMPose inference (returns hands + face info)
+        # Hand & Face inference
         t0 = time.time()
         landmarks, detections, mar, mouth_center = pipeline.process_frame(frame)
         fps = 1.0 / (time.time() - t0 + 1e-6)
         fps_hist = (fps_hist + [fps])[-30:]
 
         # State decision
-        if mode == "monkey":
-            state = "STRAIGHT_FACE"
-            if count_hands_up(landmarks, h, args.frustrated_thresh) >= 2:
-                state = "FRUSTRATED"
-            elif any(is_confused(lm, mouth_center, h, args.confused_thresh) for lm in landmarks):
-                state = "CONFUSED"
-            elif any(is_index_up_only(lm, h) for lm in landmarks):
-                state = "AHA"
-        else:
-            state = "STRAIGHT_FACE"
-            if any(is_hand_up(lm, h, args.raise_thresh) for lm in landmarks):
-                state = "HANDS_UP"
-            elif mar > args.smile_thresh:
-                state = "SMILING"
+        state = "STRAIGHT_FACE"
+        if any(is_hand_up(lm, h, args.raise_thresh) for lm in landmarks):
+            state = "HANDS_UP"
+        elif mar > args.smile_thresh:
+            state = "SMILING"
 
-        emoji = emoji_sets.get(mode, {}).get(state, emoji_sets["blank"])
-        emoji_char = {"HANDS_UP": "🙌", "SMILING": "😊", "STRAIGHT_FACE": "😐",
-                      "AHA": "💡", "CONFUSED": "🤔", "FRUSTRATED": "😤"}.get(state, "❓")
+        # Play sound when state changes
+        if state != prev_state and prev_state is not None:
+            # Sound files should be named: HANDS_UP.mp3, SMILING.mp3, STRAIGHT_FACE.mp3
+            play_sound(state)
+        prev_state = state
+
+        # Get emoji image
+        emoji = emojis.get(state, blank_emoji)
+        emoji_char = {"HANDS_UP": "🙌", "SMILING": "😊", "STRAIGHT_FACE": "😐"}.get(state, "❓")
 
         # Draw
         vis = frame.copy()
@@ -232,22 +216,17 @@ def main():
             draw_landmarks(vis, lm)
 
         cv2.putText(vis, f"{state} {emoji_char}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        cv2.putText(vis, f"FPS {np.mean(fps_hist):.0f} | {mode}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(vis, f"FPS {np.mean(fps_hist):.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         cv2.imshow('Reactor', np.hstack((vis, emoji)))
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord('q'), 27):
             break
-        elif key == ord('m'):
-            mode = "monkey"
-        elif key == ord('e'):
-            mode = "default"
 
     cap.release()
     cv2.destroyAllWindows()
-    if music:
-        music.stop()
+    music.stop()
 
 
 if __name__ == "__main__":
