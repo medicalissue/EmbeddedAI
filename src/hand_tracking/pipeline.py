@@ -536,12 +536,20 @@ class HandTrackingPipeline:
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        # FP16 for faster inference
+        # FP16 for faster inference (CUDA only)
+        self.use_fp16 = False
         if precision == "fp16" and self.device.type == "cuda":
-            self.model = self.model.half()
-            self.use_fp16 = True
-        else:
-            self.use_fp16 = False
+            try:
+                self.model = self.model.half()
+                # Test forward pass
+                test_input = torch.zeros(1, 3, 256, 192, device=self.device, dtype=torch.float16)
+                with torch.no_grad():
+                    self.model(test_input)
+                self.use_fp16 = True
+                print("[HandTracking] FP16 enabled")
+            except Exception as e:
+                print(f"[HandTracking] FP16 failed, using FP32: {e}")
+                self.model = self.model.float()
 
     def _preprocess(self, frame: np.ndarray) -> torch.Tensor:
         """Preprocess frame for model input."""
@@ -556,11 +564,13 @@ class HandTrackingPipeline:
         img = (img - mean) / std
 
         # To tensor (B, C, H, W)
-        tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
-        tensor = tensor.to(self.device)
+        tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float()
 
+        # Move to device and convert dtype
         if self.use_fp16:
-            tensor = tensor.half()
+            tensor = tensor.to(self.device, dtype=torch.float16)
+        else:
+            tensor = tensor.to(self.device, dtype=torch.float32)
 
         return tensor
 
