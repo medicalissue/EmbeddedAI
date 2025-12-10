@@ -515,7 +515,7 @@ class HandTrackingPipeline:
         # Load weights
         if MODEL_PATH.exists():
             try:
-                state_dict = torch.load(str(MODEL_PATH), map_location="cpu", weights_only=False)
+                state_dict = torch.load(str(MODEL_PATH), map_location="cpu")
                 if "state_dict" in state_dict:
                     state_dict = state_dict["state_dict"]
 

@@ -107,7 +107,7 @@ def main():
     base_model = RTMPoseModel(num_keypoints=133, input_size=(256, 192))
 
     if MODEL_PATH.exists():
-        ckpt = torch.load(str(MODEL_PATH), map_location='cpu', weights_only=False)
+        ckpt = torch.load(str(MODEL_PATH), map_location='cpu')
         state_dict = ckpt.get('state_dict', ckpt)
         base_model.load_state_dict(state_dict)
         print("Weights loaded successfully!")

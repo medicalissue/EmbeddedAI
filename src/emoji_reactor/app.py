@@ -126,7 +126,11 @@ class BackgroundMusic(threading.Thread):
 
         while self._running:
             try:
-                self._proc = subprocess.Popen(cmd)
+                self._proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
                 self._proc.wait()
             except:
                 break
