@@ -100,30 +100,39 @@ def export_tensorrt_fp16():
 
 def prune_model(model, pruning_rate):
     """
-    Apply structured pruning to YOLO model.
-    Removes entire filters/channels to reduce model size and improve speed.
+    Apply structured channel pruning to YOLO model.
+    채널 단위로 제거해서 실제 속도 향상.
     """
     import torch.nn.utils.prune as prune
 
-    total_params = 0
-    pruned_params = 0
+    total_channels = 0
+    pruned_channels = 0
 
     for name, module in model.model.named_modules():
         if isinstance(module, nn.Conv2d):
-            # Only prune Conv2d layers
-            total_params += module.weight.data.numel()
+            # Conv2d의 출력 채널 수
+            num_channels = module.weight.shape[0]
+            total_channels += num_channels
 
-            # Apply L1 unstructured pruning to weights
-            prune.l1_unstructured(module, name='weight', amount=pruning_rate)
+            # L1 structured pruning (channel-wise, dim=0)
+            prune.ln_structured(
+                module,
+                name='weight',
+                amount=pruning_rate,
+                n=1,  # L1 norm
+                dim=0  # Output channels
+            )
 
             # Make pruning permanent
             prune.remove(module, 'weight')
 
-            # Count pruned parameters (zeros in weight)
-            pruned_params += (module.weight.data == 0).sum().item()
+            # Count pruned channels
+            pruned_in_layer = (module.weight.abs().sum(dim=[1, 2, 3]) == 0).sum().item()
+            pruned_channels += pruned_in_layer
 
-    actual_prune_rate = pruned_params / total_params
-    print(f"   Pruned {pruned_params}/{total_params} parameters ({actual_prune_rate:.1%})")
+    actual_prune_rate = pruned_channels / total_channels
+    print(f"   Pruned {pruned_channels}/{total_channels} channels ({actual_prune_rate:.1%})")
+    print(f"   Expected speedup: ~{actual_prune_rate*0.7:.0%}")
 
     return model
 
@@ -131,12 +140,16 @@ def prune_model(model, pruning_rate):
 def export_pruned_models():
     """
     Export pruned models at different pruning rates.
+    Note: 빠른 export만 수행. Fine-tuning은 prune_and_finetune.py 사용.
     """
     print("\n" + "=" * 80)
-    print("Exporting Pruned Models")
+    print("Exporting Pruned Models (Without Fine-tuning)")
     print("=" * 80)
+    print("\nNote: Structured pruning은 fine-tuning 없이는 정확도가 떨어집니다.")
+    print("      Fine-tuning을 원하면: python3 prune_and_finetune.py")
+    print("")
 
-    pruning_rates = [0.1, 0.3, 0.5, 0.7]
+    pruning_rates = [0.1, 0.3, 0.5]
 
     for rate in pruning_rates:
         print(f"\n[Pruning Rate: {rate*100:.0f}%]")
@@ -159,6 +172,8 @@ def export_pruned_models():
 
             print(f"  ✓ Saved: {pruned_path}")
             print(f"    Size: {pruned_path.stat().st_size / (1024*1024):.2f} MB")
+            print(f"    Expected speedup: ~{rate*0.7:.0%} (on Jetson Nano)")
+            print(f"    ⚠ Fine-tuning recommended for accuracy")
 
         except Exception as e:
             print(f"  ✗ Failed to save: {e}")

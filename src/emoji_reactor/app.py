@@ -151,7 +151,7 @@ def main():
             "nvarguscamerasrc sensor-id=0 sensor-mode=2 ! "
             "video/x-raw(memory:NVMM), width=640, height=480, framerate=30/1 ! "
             "nvvidconv ! video/x-raw, format=BGRx ! "
-            "videoconvert ! video/x-raw, format=BGR ! appsink drop=1"
+            "videoconvert ! video/x-raw, format=BGR ! appsink drop=0"
         )
         print("Opening camera (GStreamer)...")
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
@@ -168,8 +168,8 @@ def main():
     cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
 
-    # RTMPose pipeline (handles both hands and face)
-    print("[Init] RTMPose (hand + face)...")
+    # YOLO11n-Pose for hands + MediaPipe Face Mesh
+    print("[Init] YOLO11n-Pose (hands) + MediaPipe (face)...")
     pipeline = HandTrackingPipeline(precision=args.precision, prune_rate=args.prune)
     pipeline.print_stats()
 

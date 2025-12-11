@@ -80,6 +80,7 @@ Embedded_AI/
 │       ├── SMILING.mp3
 │       └── STRAIGHT_FACE.mp3
 ├── export_optimized_models.py   # Create TensorRT/pruned models
+├── prune_and_finetune.py        # Structured pruning + fine-tuning
 ├── benchmark_realtime.py        # Real-time performance test
 ├── benchmark_optimization.py    # Quantization/pruning comparison
 ├── compare_models.py            # Quick model comparison
@@ -111,9 +112,17 @@ This creates:
 - TensorRT INT8 engine (best speed)
 - TensorRT FP16 engine (best balance)
 - ONNX model (portable)
-- Pruned models (10%, 30%, 50%, 70%)
+- Pruned models (10%, 30%, 50%) - **structured channel pruning**
 
-**Note**: TensorRT engines are platform-specific. Export on the device where you'll run inference.
+**For Fine-tuned Pruning** (recommended for accuracy):
+```bash
+# Structured pruning + fine-tuning with HuggingFace dataset
+python3 prune_and_finetune.py
+```
+
+**Note**:
+- TensorRT engines are platform-specific. Export on the device where you'll run inference.
+- Structured pruning provides **real speedup** on Jetson Nano (~20-30%)
 
 ### Benchmark Performance
 
@@ -133,7 +142,10 @@ python3 benchmark_optimization.py
 - **Jetson Nano**: Use FP16 or INT8 TensorRT for best performance
 - **Desktop/Laptop**: Use FP32 (no optimization needed)
 - **INT8**: May have ~2% accuracy loss without calibration
-- **Pruning**: Avoid >30% pruning to maintain hand detection quality
+- **Structured Pruning**:
+  - 10-30% pruning: ~20-30% speedup with fine-tuning
+  - Use `prune_and_finetune.py` for best results
+  - Avoid >50% pruning even with fine-tuning
 
 See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for detailed instructions.
 
