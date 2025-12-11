@@ -242,13 +242,19 @@ def main():
         display_width = WINDOW_WIDTH * 2
         display_height = WINDOW_HEIGHT
 
+        # nvoverlaysink parameters:
+        # overlay=2: Top layer (above all windows)
+        # overlay-depth=1: Fullscreen (use entire display)
         gst_pipeline = (
             f"appsrc ! "
             f"video/x-raw, format=BGR, width={display_width}, height={display_height}, framerate=30/1 ! "
             f"videoconvert ! video/x-raw, format=BGRx ! "
             f"nvvidconv ! video/x-raw(memory:NVMM), format=NV12 ! "
-            f"nvoverlaysink overlay-x=0 overlay-y=0 overlay-w={display_width} overlay-h={display_height}"
+            f"nvoverlaysink overlay=2 overlay-depth=1 sync=false"
         )
+
+        print(f"[GStreamer] Display: {display_width}x{display_height}")
+        print(f"[GStreamer] Overlay will appear on top of desktop (overlay=2)")
 
         try:
             gst_writer = cv2.VideoWriter(
@@ -275,6 +281,8 @@ def main():
     if not use_gst_display:
         cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
+        # Fullscreen mode (optional)
+        # cv2.setWindowProperty('Reactor', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     # YOLO11n-Pose for hands + MediaPipe Face Mesh
     print("[Init] YOLO11n-Pose (hands) + MediaPipe (face)...")
