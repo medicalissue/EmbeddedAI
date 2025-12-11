@@ -245,8 +245,8 @@ def main():
         gst_pipeline = (
             f"appsrc ! "
             f"video/x-raw, format=BGR, width={display_width}, height={display_height}, framerate=30/1 ! "
-            f"videoconvert ! "
-            f"video/x-raw(memory:NVMM), format=NV12 ! "
+            f"videoconvert ! video/x-raw, format=BGRx ! "
+            f"nvvidconv ! video/x-raw(memory:NVMM), format=NV12 ! "
             f"nvoverlaysink overlay-x=0 overlay-y=0 overlay-w={display_width} overlay-h={display_height}"
         )
 
