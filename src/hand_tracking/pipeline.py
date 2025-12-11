@@ -57,14 +57,27 @@ class HandTrackingPipeline:
     def __init__(self, precision: str = "fp32"):
         self.precision = precision
 
-        print("[Pipeline] Loading YOLO11n-Pose hand model...")
-        model_path = ROOT / "assets/models/yolo11n_hand_pose.pt"
+        print(f"[Pipeline] Loading YOLO11n-Pose hand model ({precision})...")
+
+        # Select model based on precision
+        if precision == "int8":
+            model_path = ROOT / "assets/models/yolo11n_hand_pose_int8.engine"
+            if not model_path.exists():
+                print(f"[Warning] INT8 TensorRT engine not found, using FP32")
+                model_path = ROOT / "assets/models/yolo11n_hand_pose.pt"
+        elif precision == "fp16":
+            model_path = ROOT / "assets/models/yolo11n_hand_pose_fp16.engine"
+            if not model_path.exists():
+                print(f"[Warning] FP16 TensorRT engine not found, using FP32")
+                model_path = ROOT / "assets/models/yolo11n_hand_pose.pt"
+        else:
+            model_path = ROOT / "assets/models/yolo11n_hand_pose.pt"
 
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
 
         self.hand_model = YOLO(str(model_path))
-        print(f"[Pipeline] YOLO11n-Pose loaded (21 keypoints per hand)")
+        print(f"[Pipeline] YOLO11n-Pose loaded (21 keypoints per hand, {precision})")
 
         print("[Pipeline] Initializing MediaPipe Face Mesh...")
         self.face_mesh = mp_face_mesh.FaceMesh(

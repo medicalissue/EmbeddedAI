@@ -129,7 +129,7 @@ def play_sound(sound_name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--precision', choices=['fp32', 'fp16'], default='fp16')
+    parser.add_argument('--precision', choices=['fp32', 'fp16', 'int8'], default='fp32')
     parser.add_argument('--camera', type=int, default=0)
     parser.add_argument('--raise-thresh', type=float, default=0.25)
     parser.add_argument('--smile-thresh', type=float, default=0.35)
