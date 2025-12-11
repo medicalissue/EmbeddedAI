@@ -197,6 +197,8 @@ def main():
     parser.add_argument('--no-gstreamer', action='store_true')
     parser.add_argument('--audio-device', type=str, default='hw:0,3',
                         help='ALSA audio device (hw:0,3 for HDMI, hw:1,0 for expansion board)')
+    parser.add_argument('--gst-display', action='store_true',
+                        help='Use GStreamer nvoverlaysink for HDMI output (Jetson Nano only, ~10x faster)')
     args = parser.parse_args()
 
     emojis = load_emojis()
@@ -231,8 +233,48 @@ def main():
         print("Cannot open camera")
         return
 
-    cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
+    # Display setup: GStreamer HDMI output or cv2.imshow
+    gst_writer = None
+    use_gst_display = args.gst_display
+
+    if use_gst_display:
+        # GStreamer nvoverlaysink for hardware-accelerated HDMI output
+        display_width = WINDOW_WIDTH * 2
+        display_height = WINDOW_HEIGHT
+
+        gst_pipeline = (
+            f"appsrc ! "
+            f"video/x-raw, format=BGR, width={display_width}, height={display_height}, framerate=30/1 ! "
+            f"videoconvert ! "
+            f"video/x-raw(memory:NVMM), format=NV12 ! "
+            f"nvoverlaysink overlay-x=0 overlay-y=0 overlay-w={display_width} overlay-h={display_height}"
+        )
+
+        try:
+            gst_writer = cv2.VideoWriter(
+                gst_pipeline,
+                cv2.CAP_GSTREAMER,
+                0,  # fourcc (ignored for appsrc)
+                30,  # fps
+                (display_width, display_height),
+                True
+            )
+
+            if not gst_writer.isOpened():
+                print("[Warning] GStreamer nvoverlaysink failed, falling back to cv2.imshow")
+                use_gst_display = False
+                gst_writer = None
+            else:
+                print("[Display] GStreamer nvoverlaysink enabled (~10x faster than cv2.imshow)")
+        except Exception as e:
+            print(f"[Warning] GStreamer init failed: {e}")
+            print("[Display] Falling back to cv2.imshow")
+            use_gst_display = False
+            gst_writer = None
+
+    if not use_gst_display:
+        cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
 
     # YOLO11n-Pose for hands + MediaPipe Face Mesh
     print("[Init] YOLO11n-Pose (hands) + MediaPipe (face)...")
@@ -242,58 +284,119 @@ def main():
     fps_hist = []
     prev_state = None
 
-    print("\n[Ready] Press 'q' to quit\n")
+    # Keyboard input handling (for GStreamer mode)
+    import select
+    import termios
+    import tty
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    def setup_terminal():
+        """Setup terminal for non-blocking keyboard input."""
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        return old_settings
 
-        if not args.no_mirror:
-            frame = frame[:, ::-1].copy()
-        frame = cv2.resize(frame, (WINDOW_WIDTH, WINDOW_HEIGHT))
-        h, w = frame.shape[:2]
+    def restore_terminal(old_settings):
+        """Restore terminal settings."""
+        fd = sys.stdin.fileno()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-        # Hand & Face inference
-        t0 = time.time()
-        landmarks, detections, mar, mouth_center = pipeline.process_frame(frame)
-        fps = 1.0 / (time.time() - t0 + 1e-6)
-        fps_hist = (fps_hist + [fps])[-30:]
+    def check_keyboard():
+        """Non-blocking keyboard check. Returns key or None."""
+        if select.select([sys.stdin], [], [], 0)[0]:
+            return sys.stdin.read(1)
+        return None
 
-        # State decision
-        state = "STRAIGHT_FACE"
-        if any(is_hand_up(lm, h, args.raise_thresh) for lm in landmarks):
-            state = "HANDS_UP"
-        elif mar > args.smile_thresh:
-            state = "SMILING"
+    # Setup keyboard input for GStreamer mode
+    old_term_settings = None
+    if use_gst_display:
+        try:
+            old_term_settings = setup_terminal()
+            print("\n[Ready] Press 'q' to quit (GStreamer mode)\n")
+        except:
+            print("\n[Warning] Terminal setup failed, keyboard input disabled")
+            print("[Ready] Use Ctrl+C to quit\n")
+    else:
+        print("\n[Ready] Press 'q' to quit\n")
 
-        # Play sound when state changes
-        if state != prev_state and prev_state is not None:
-            # Sound files should be named: HANDS_UP.wav/mp3, SMILING.wav/mp3, STRAIGHT_FACE.wav/mp3
-            play_sound(state, device=args.audio_device)
-        prev_state = state
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # Get emoji image
-        emoji = emojis.get(state, blank_emoji)
-        emoji_char = {"HANDS_UP": "🙌", "SMILING": "😊", "STRAIGHT_FACE": "😐"}.get(state, "❓")
+            if not args.no_mirror:
+                frame = frame[:, ::-1].copy()
+            frame = cv2.resize(frame, (WINDOW_WIDTH, WINDOW_HEIGHT))
+            h, w = frame.shape[:2]
 
-        # Draw
-        vis = frame.copy()
-        for lm in landmarks:
-            draw_landmarks(vis, lm)
+            # Hand & Face inference
+            t0 = time.time()
+            landmarks, detections, mar, mouth_center = pipeline.process_frame(frame)
+            fps = 1.0 / (time.time() - t0 + 1e-6)
+            fps_hist = (fps_hist + [fps])[-30:]
 
-        cv2.putText(vis, f"{state} {emoji_char}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        cv2.putText(vis, f"FPS {np.mean(fps_hist):.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # State decision
+            state = "STRAIGHT_FACE"
+            if any(is_hand_up(lm, h, args.raise_thresh) for lm in landmarks):
+                state = "HANDS_UP"
+            elif mar > args.smile_thresh:
+                state = "SMILING"
 
-        cv2.imshow('Reactor', np.hstack((vis, emoji)))
+            # Play sound when state changes
+            if state != prev_state and prev_state is not None:
+                # Sound files should be named: HANDS_UP.wav/mp3, SMILING.wav/mp3, STRAIGHT_FACE.wav/mp3
+                play_sound(state, device=args.audio_device)
+            prev_state = state
 
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord('q'), 27):
-            break
+            # Get emoji image
+            emoji = emojis.get(state, blank_emoji)
+            emoji_char = {"HANDS_UP": "🙌", "SMILING": "😊", "STRAIGHT_FACE": "😐"}.get(state, "❓")
 
-    cap.release()
-    cv2.destroyAllWindows()
-    music.stop()
+            # Draw
+            vis = frame.copy()
+            for lm in landmarks:
+                draw_landmarks(vis, lm)
+
+            cv2.putText(vis, f"{state} {emoji_char}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(vis, f"FPS {np.mean(fps_hist):.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            # Display output
+            display_frame = np.hstack((vis, emoji))
+
+            if use_gst_display:
+                # GStreamer HDMI output (hardware-accelerated)
+                gst_writer.write(display_frame)
+
+                # Check keyboard input (non-blocking)
+                key = check_keyboard()
+                if key == 'q':
+                    break
+            else:
+                # Standard cv2.imshow
+                cv2.imshow('Reactor', display_frame)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord('q'), 27):
+                    break
+
+    except KeyboardInterrupt:
+        print("\n[Interrupted] Shutting down...")
+
+    finally:
+        # Cleanup
+        cap.release()
+
+        if use_gst_display:
+            if gst_writer:
+                gst_writer.release()
+            if old_term_settings:
+                restore_terminal(old_term_settings)
+        else:
+            cv2.destroyAllWindows()
+
+        music.stop()
+        print("[Exit] Cleanup complete")
 
 
 if __name__ == "__main__":
