@@ -53,7 +53,7 @@ def load_emojis():
         if img is not None:
             loaded[state] = cv2.resize(img, (WINDOW_WIDTH, WINDOW_HEIGHT))
         else:
-            print(f"[Warning] Could not load {path}")
+            print("[Warning] Could not load {}".format(path))
 
     return loaded
 
@@ -71,7 +71,8 @@ class BackgroundMusic(threading.Thread):
     Supports pause/resume via SIGSTOP/SIGCONT signals.
     """
     def __init__(self, path, device="hw:0,3"):
-        super().__init__(daemon=True)
+        super(BackgroundMusic, self).__init__()
+        self.daemon = True
         self.path = path
         self.device = device  # hw:0,3 for HDMI, hw:1,0 for expansion board
         self._running = True
@@ -114,7 +115,7 @@ class BackgroundMusic(threading.Thread):
     def run(self):
         """Main playback loop."""
         if not os.path.isfile(self.path):
-            print(f"[BackgroundMusic] File not found: {self.path}")
+            print("[BackgroundMusic] File not found: {}".format(self.path))
             return
 
         # Kill any existing aplay processes
@@ -150,7 +151,7 @@ class BackgroundMusic(threading.Thread):
                     self._proc.wait()
 
             except Exception as e:
-                print(f"[BackgroundMusic] Error: {e}")
+                print("[BackgroundMusic] Error: {}".format(e))
                 break
 
             # Loop: restart playback if still running
@@ -166,11 +167,11 @@ def play_sound(sound_name, device="hw:0,3"):
         sound_name: Name of sound file (without extension)
         device: ALSA device (hw:0,3 for HDMI, hw:1,0 for expansion board)
     """
-    sound_path = AUDIO_DIR / f"{sound_name}.wav"
+    sound_path = AUDIO_DIR / "{}.wav".format(sound_name)
 
     # Try .wav first, fallback to .mp3
     if not os.path.isfile(sound_path):
-        sound_path = AUDIO_DIR / f"{sound_name}.mp3"
+        sound_path = AUDIO_DIR / "{}.mp3".format(sound_name)
 
     if not os.path.isfile(sound_path):
         return
@@ -197,8 +198,6 @@ def main():
     parser.add_argument('--no-gstreamer', action='store_true')
     parser.add_argument('--audio-device', type=str, default='hw:0,3',
                         help='ALSA audio device (hw:0,3 for HDMI, hw:1,0 for expansion board)')
-    parser.add_argument('--gst-display', action='store_true',
-                        help='Use GStreamer nvoverlaysink for HDMI output (Jetson Nano only, ~10x faster)')
     args = parser.parse_args()
 
     emojis = load_emojis()
@@ -211,7 +210,7 @@ def main():
 
     music = BackgroundMusic(str(bg_music_path), device=args.audio_device)
     music.start()
-    print(f"[Audio] Background music: {bg_music_path.name} on {args.audio_device}")
+    print("[Audio] Background music: {} on {}".format(bg_music_path.name, args.audio_device))
 
     # Camera (GStreamer for Jetson Nano)
     if not args.no_gstreamer:
@@ -224,7 +223,7 @@ def main():
         print("Opening camera (GStreamer)...")
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     else:
-        print(f"Opening camera {args.camera}...")
+        print("Opening camera {}...".format(args.camera))
         cap = cv2.VideoCapture(args.camera)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -233,56 +232,9 @@ def main():
         print("Cannot open camera")
         return
 
-    # Display setup: GStreamer HDMI output or cv2.imshow
-    gst_writer = None
-    use_gst_display = args.gst_display
-
-    if use_gst_display:
-        # GStreamer nvoverlaysink for hardware-accelerated HDMI output
-        display_width = WINDOW_WIDTH * 2
-        display_height = WINDOW_HEIGHT
-
-        # nvoverlaysink parameters:
-        # overlay=2: Top layer (above all windows)
-        # overlay-depth=1: Fullscreen (use entire display)
-        gst_pipeline = (
-            f"appsrc ! "
-            f"video/x-raw, format=BGR, width={display_width}, height={display_height}, framerate=30/1 ! "
-            f"videoconvert ! video/x-raw, format=BGRx ! "
-            f"nvvidconv ! video/x-raw(memory:NVMM), format=NV12 ! "
-            f"nvoverlaysink overlay=2 overlay-depth=1 sync=false"
-        )
-
-        print(f"[GStreamer] Display: {display_width}x{display_height}")
-        print(f"[GStreamer] Overlay will appear on top of desktop (overlay=2)")
-
-        try:
-            gst_writer = cv2.VideoWriter(
-                gst_pipeline,
-                cv2.CAP_GSTREAMER,
-                0,  # fourcc (ignored for appsrc)
-                30,  # fps
-                (display_width, display_height),
-                True
-            )
-
-            if not gst_writer.isOpened():
-                print("[Warning] GStreamer nvoverlaysink failed, falling back to cv2.imshow")
-                use_gst_display = False
-                gst_writer = None
-            else:
-                print("[Display] GStreamer nvoverlaysink enabled (~10x faster than cv2.imshow)")
-        except Exception as e:
-            print(f"[Warning] GStreamer init failed: {e}")
-            print("[Display] Falling back to cv2.imshow")
-            use_gst_display = False
-            gst_writer = None
-
-    if not use_gst_display:
-        cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
-        # Fullscreen mode (optional)
-        # cv2.setWindowProperty('Reactor', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    # Display setup
+    cv2.namedWindow('Reactor', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Reactor', WINDOW_WIDTH * 2, WINDOW_HEIGHT)
 
     # YOLO11n-Pose for hands + MediaPipe Face Mesh
     print("[Init] YOLO11n-Pose (hands) + MediaPipe (face)...")
@@ -292,40 +244,7 @@ def main():
     fps_hist = []
     prev_state = None
 
-    # Keyboard input handling (for GStreamer mode)
-    import select
-    import termios
-    import tty
-
-    def setup_terminal():
-        """Setup terminal for non-blocking keyboard input."""
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-        return old_settings
-
-    def restore_terminal(old_settings):
-        """Restore terminal settings."""
-        fd = sys.stdin.fileno()
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    def check_keyboard():
-        """Non-blocking keyboard check. Returns key or None."""
-        if select.select([sys.stdin], [], [], 0)[0]:
-            return sys.stdin.read(1)
-        return None
-
-    # Setup keyboard input for GStreamer mode
-    old_term_settings = None
-    if use_gst_display:
-        try:
-            old_term_settings = setup_terminal()
-            print("\n[Ready] Press 'q' to quit (GStreamer mode)\n")
-        except:
-            print("\n[Warning] Terminal setup failed, keyboard input disabled")
-            print("[Ready] Use Ctrl+C to quit\n")
-    else:
-        print("\n[Ready] Press 'q' to quit\n")
+    print("\n[Ready] Press 'q' to quit\n")
 
     try:
         while True:
@@ -366,27 +285,16 @@ def main():
             for lm in landmarks:
                 draw_landmarks(vis, lm)
 
-            cv2.putText(vis, f"{state} {emoji_char}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(vis, f"FPS {np.mean(fps_hist):.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(vis, "{} {}".format(state, emoji_char), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(vis, "FPS {:.0f}".format(np.mean(fps_hist)), (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             # Display output
             display_frame = np.hstack((vis, emoji))
+            cv2.imshow('Reactor', display_frame)
 
-            if use_gst_display:
-                # GStreamer HDMI output (hardware-accelerated)
-                gst_writer.write(display_frame)
-
-                # Check keyboard input (non-blocking)
-                key = check_keyboard()
-                if key == 'q':
-                    break
-            else:
-                # Standard cv2.imshow
-                cv2.imshow('Reactor', display_frame)
-
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord('q'), 27):
-                    break
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord('q'), 27):
+                break
 
     except KeyboardInterrupt:
         print("\n[Interrupted] Shutting down...")
@@ -394,15 +302,7 @@ def main():
     finally:
         # Cleanup
         cap.release()
-
-        if use_gst_display:
-            if gst_writer:
-                gst_writer.release()
-            if old_term_settings:
-                restore_terminal(old_term_settings)
-        else:
-            cv2.destroyAllWindows()
-
+        cv2.destroyAllWindows()
         music.stop()
         print("[Exit] Cleanup complete")
 
